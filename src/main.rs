@@ -1,72 +1,95 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, vec};
 
-fn analyze(program: &str) -> (HashMap<String, usize>, HashMap<String, usize>) {
-    let mut symbol_table: HashMap<String, usize> = HashMap::new();
+fn analyze(program: &str) -> (HashMap<String, usize>, Vec<String>, HashMap<String, usize>) {
+    let mut global_symbol_table: HashMap<String, usize> = HashMap::new();
+    let mut local_symbol_table: Vec<String> = Vec::new();
     let mut function_table: HashMap<String, usize> = HashMap::new();
-    let mut memory_address = 0;
+    let mut address = 0;
+    let mut is_local = false;
 
-    for (line_number, line) in program.lines().enumerate() {
-        let tokens: Vec<&str> = line.trim().split_whitespace().collect();
-
-        if tokens.is_empty() {
-            continue;
-        }
-
-        match tokens.as_slice() {
+    for (line_number, line) in program.trim().lines().enumerate() {
+        let line: Vec<&str> = line.trim().split_whitespace().collect();
+   
+        match line.as_slice() {
             ["var", name] => {
-                if symbol_table.contains_key(*name) {
-                    eprintln!("variable redefined: {}", name);
+                if is_local {
+                    if local_symbol_table.contains(&name.to_string()) || global_symbol_table.contains_key(*name) {
+                        println!("variable redefined: {}", name);
+                    } else {
+                        local_symbol_table.push(name.to_string());
+                    }
                 } else {
-                    symbol_table.insert(name.to_string(), memory_address);
-                    memory_address += 1;
+                    if global_symbol_table.contains_key(*name) {
+                        println!("variable redefined: {}", name);
+                    } else {
+                        global_symbol_table.insert(name.to_string(), address);
+                        address += 1;
+                    }
                 }
             }
             [name, "=", _number] => {
-                if !symbol_table.contains_key(*name) {
-                    eprintln!("variable unknown: {}", name);
+                if is_local {
+                    if !local_symbol_table.contains(&name.to_string()) && !global_symbol_table.contains_key(*name) {
+                        println!("variable unknow: {}", name);
+                    }
+                } else { 
+                    if !global_symbol_table.contains_key(*name) {
+                        println!("variable unknow: {}", name);
+                    }
                 }
             }
             ["func", name, "{"] => {
                 let func_name = format!("{}", name);
                 if function_table.contains_key(&func_name) {
-                    eprintln!("function redefined: {}", name);
+                    println!("function redefined: {}", name);
                 } else {
                     function_table.insert(func_name, line_number);
                 }
+                is_local = true;
             }
-            ["}"] => {}
+            ["}"] => {
+                if !local_symbol_table.is_empty() {
+                    println!("clearing local_symbol_table: {:?}", local_symbol_table);
+                    local_symbol_table.clear();
+                }
+                is_local = false;
+            }
             [name] if name.ends_with("()") => {
                 if !function_table.contains_key(*name) {
                     eprintln!("function unknown: {}", name);
                 }
             }
             _ => {
-                eprintln!("unmatched: {}", line);
+                println!("unmatched: {:?}", line);
             }
         }
     }
-
-    (symbol_table, function_table)
+    println!("analysis ended\n");
+    (global_symbol_table, local_symbol_table, function_table)
 }
 
-fn execute(program: &str, symbol_table: &HashMap<String, usize>, function_table: &HashMap<String, usize>) {
-    let lines: Vec<&str> = program.lines().map(str::trim).collect();
-    let mut memory = vec![0; symbol_table.len()];
-    let mut call_stack: Vec<usize> = Vec::new();
+fn execute(program: &str, global_symbol_table: &HashMap<String, usize>, function_table: &HashMap<String, usize>) -> (Vec<i32>, Vec<usize>, Vec<HashMap<String,usize>>) {
+    let lines: Vec<&str> = program.trim().lines().collect();
     let mut pc = 0;
+    let mut memory = vec![0; global_symbol_table.len()];
+    let mut call_stack: Vec<usize> = Vec::new();
+
+    let mut activation_frames: Vec<HashMap<String, usize>> = Vec::new();
+    let mut address = memory.len();
+    let mut is_local = false;
 
     while pc < lines.len() {
-        let tokens: Vec<&str> = lines[pc].split_whitespace().collect();
-        //println!("{:?}", tokens);
-        if tokens.is_empty() {
-            pc += 1;
-            continue;
-        }
+        let line: Vec<&str> = lines[pc].split_whitespace().collect();
 
-        match tokens.as_slice() {
-            ["var", _name] => {}
+        match line.as_slice() {
+            ["var", _name] => {
+                // se for definição local
+                //   incrementa pilha (memory.append(0))
+                //   adiciona name no quadro de ativação atual com endereço do topo da memória
+            }
             [name, "=", number] => {
-                if let Some(&address) = symbol_table.get(*name) {
+                // atribuição em variável global ou local?
+                if let Some(&address) = global_symbol_table.get(*name) {
                     if let Ok(value) = number.parse::<i32>() {
                         memory[address] = value;
                         println!("{} at address {} receives {}", name, address, value);
@@ -74,19 +97,25 @@ fn execute(program: &str, symbol_table: &HashMap<String, usize>, function_table:
                 }
             }
             ["func", _name, "{"] => {
-                while pc < lines.len() && lines[pc] != "}" {
+                while lines[pc].trim() != "}" {
                     pc += 1;
                 }
             }
             [name] if name.ends_with("()") => {
+                // criar um novo quadro de ativação (no topo de "activation_frames")
                 if let Some(&target_line) = function_table.get(*name) {
                     println!("{} called in line {}", name, pc);
                     call_stack.push(pc);
-                    pc = target_line+1;
-                    continue;
+                    pc = target_line;
+                } else {
+                    println!("invalid function");
                 }
+                is_local=true;
             }
             ["}"] => {
+                // para o último quadro de ativação:
+                //  limpar a parte de variáveis locais da memória
+                //  eliminar último quadro de ativação
                 if let Some(return_line) = call_stack.pop() {
                     println!("return to line {}", return_line);
                     pc = return_line;
@@ -94,17 +123,17 @@ fn execute(program: &str, symbol_table: &HashMap<String, usize>, function_table:
             }
             _ => {}
         }
-
         pc += 1;
     }
 
     println!("execution ended\n");
-    println!("memory: {:?}", memory);
-    println!("call_stack: {:?}", call_stack);
+    (memory, call_stack, activation_frames)
+
 }
 
 fn main() {
-    let program = r#"var a
+    let program = r#"
+        var a
         func f() {
             a = 5
             var b
@@ -118,8 +147,13 @@ fn main() {
         g()
     "#;
 
-    let (symbol_table, function_table) = analyze(program);
-    println!("symbol_table: {:?}", symbol_table);
-    println!("function_table: {:?}", function_table);
-    execute(program, &symbol_table, &function_table);
+    let (global_symbol_table, local_symbol_table, function_table) = analyze(program);
+    println!("global_symbol_table: {:?}", global_symbol_table);
+    println!("local_symbol_table: {:?}",local_symbol_table);
+    println!("function_table: {:?}\n", function_table);
+
+    let (memory, call_stack, activation_frames) = execute(program, &global_symbol_table, &function_table);
+    println!("memory: {:?}", memory);
+    println!("call_stack: {:?}", call_stack);
+    println!("activation_frames: {:?}", activation_frames);
 }
